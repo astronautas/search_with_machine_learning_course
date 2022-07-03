@@ -2,6 +2,7 @@
 # weeks (e.g. query understanding).  See the main section at the bottom of the file
 from opensearchpy import OpenSearch
 import warnings
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 import argparse
 import json
@@ -15,17 +16,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-logging.basicConfig(format='%(levelname)s:%(message)s')
+logging.basicConfig(format="%(levelname)s:%(message)s")
 
 # expects clicks and impressions to be in the row
 def create_prior_queries_from_group(
-        click_group):  # total impressions isn't currently used, but it mayb worthwhile at some point
+    click_group,
+):  # total impressions isn't currently used, but it mayb worthwhile at some point
     click_prior_query = ""
     # Create a string that looks like:  "query": "1065813^100 OR 8371111^89", where the left side is the doc id and the right side is the weight.  In our case, the number of clicks a document received in the training set
     if click_group is not None:
         for item in click_group.itertuples():
             try:
-                click_prior_query += "%s^%.3f  " % (item.doc_id, item.clicks / item.num_impressions)
+                click_prior_query += "%s^%.3f  " % (
+                    item.doc_id,
+                    item.clicks / item.num_impressions,
+                )
 
             except KeyError as ke:
                 pass  # nothing to do in this case, it just means we can't find priors for this doc
@@ -33,15 +38,18 @@ def create_prior_queries_from_group(
 
 
 # expects clicks from the raw click logs, so value_counts() are being passed in
-def create_prior_queries(doc_ids, doc_id_weights,
-                         query_times_seen):  # total impressions isn't currently used, but it mayb worthwhile at some point
+def create_prior_queries(
+    doc_ids, doc_id_weights, query_times_seen
+):  # total impressions isn't currently used, but it mayb worthwhile at some point
     click_prior_query = ""
     # Create a string that looks like:  "query": "1065813^100 OR 8371111^89", where the left side is the doc id and the right side is the weight.  In our case, the number of clicks a document received in the training set
     click_prior_map = ""  # looks like: '1065813':100, '8371111':809
     if doc_ids is not None and doc_id_weights is not None:
         for idx, doc in enumerate(doc_ids):
             try:
-                wgt = doc_id_weights[doc]  # This should be the number of clicks or whatever
+                wgt = doc_id_weights[
+                    doc
+                ]  # This should be the number of clicks or whatever
                 click_prior_query += "%s^%.3f  " % (doc, wgt / query_times_seen)
             except KeyError as ke:
                 pass  # nothing to do in this case, it just means we can't find priors for this doc
@@ -49,7 +57,22 @@ def create_prior_queries(doc_ids, doc_id_weights,
 
 
 # Hardcoded query here.  Better to use search templates or other query config.
-def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None):
+def create_query(
+    user_query,
+    click_prior_query,
+    filters,
+    sort="_score",
+    sortDir="desc",
+    size=10,
+    source=None,
+    synonyms=False,
+):
+    name_field = "name" if not synonyms else "name.synonyms"
+
+    if synonyms:
+        print(name_field)
+        print("Using synonyms")
+
     query_obj = {
         'size': size,
         "sort": [
@@ -65,7 +88,7 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                         "should": [  #
                             {
                                 "match": {
-                                    "name": {
+                                    name_field: {
                                         "query": user_query,
                                         "fuzziness": "1",
                                         "prefix_length": 2,
@@ -89,7 +112,7 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                                     "type": "phrase",
                                     "slop": "6",
                                     "minimum_should_match": "2<75%",
-                                    "fields": ["name^10", "name.hyphens^10", "shortDescription^5",
+                                    "fields": [f"#{name_field}^10", "name.hyphens^10", "shortDescription^5",
                                                "longDescription^5", "department^0.5", "sku", "manufacturer", "features",
                                                "categoryPath", "name_synonyms"]
                                 }
@@ -167,14 +190,17 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
             }
         }
     }
+    
     if click_prior_query is not None and click_prior_query != "":
-        query_obj["query"]["function_score"]["query"]["bool"]["should"].append({
-            "query_string": {
-                # This may feel like cheating, but it's really not, esp. in ecommerce where you have all this prior data,  You just can't let the test clicks leak in, which is why we split on date
-                "query": click_prior_query,
-                "fields": ["_id"]
+        query_obj["query"]["function_score"]["query"]["bool"]["should"].append(
+            {
+                "query_string": {
+                    # This may feel like cheating, but it's really not, esp. in ecommerce where you have all this prior data,  You just can't let the test clicks leak in, which is why we split on date
+                    "query": click_prior_query,
+                    "fields": ["_id"],
+                }
             }
-        })
+        )
     if user_query == "*" or user_query == "#":
         # replace the bool
         try:
@@ -186,32 +212,60 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
     return query_obj
 
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc"):
+def search(
+    client,
+    user_query,
+    index="bbuy_products",
+    sort="_score",
+    sortDir="desc",
+    synonyms=False,
+):
     #### W3: classify the query
     #### W3: create filters and boosts
     # Note: you may also want to modify the `create_query` method above
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"])
+    query_obj = create_query(
+        user_query,
+        click_prior_query=None,
+        filters=None,
+        sort=sort,
+        sortDir=sortDir,
+        source=["name", "shortDescription"],
+        synonyms=synonyms,
+    )
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
-    if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
-        hits = response['hits']['hits']
+    if response and response["hits"]["hits"] and len(response["hits"]["hits"]) > 0:
+        hits = response["hits"]["hits"]
         print(json.dumps(response, indent=2))
 
 
 if __name__ == "__main__":
-    host = 'localhost'
+    host = "localhost"
     port = 9200
-    auth = ('admin', 'admin')  # For testing only. Don't store credentials in code.
-    parser = argparse.ArgumentParser(description='Build LTR.')
+    auth = ("admin", "admin")  # For testing only. Don't store credentials in code.
+    parser = argparse.ArgumentParser(description="Build LTR.")
     general = parser.add_argument_group("general")
-    general.add_argument("-i", '--index', default="bbuy_products",
-                         help='The name of the main index to search')
-    general.add_argument("-s", '--host', default="localhost",
-                         help='The OpenSearch host name')
-    general.add_argument("-p", '--port', type=int, default=9200,
-                         help='The OpenSearch port')
-    general.add_argument('--user',
-                         help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
+    general.add_argument(
+        "-i",
+        "--index",
+        default="bbuy_products",
+        help="The name of the main index to search",
+    )
+    general.add_argument(
+        "-b", "--host", default="localhost", help="The OpenSearch host name"
+    )
+    general.add_argument(
+        "-p", "--port", type=int, default=9200, help="The OpenSearch port"
+    )
+
+    general.add_argument(
+        "-s", "--synonyms", type=bool, default=False, help="Use synonyms."
+    )
+
+    general.add_argument(
+        "--user",
+        help="The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin",
+    )
 
     args = parser.parse_args()
 
@@ -227,7 +281,7 @@ if __name__ == "__main__":
 
     base_url = "https://{}:{}/".format(host, port)
     opensearch = OpenSearch(
-        hosts=[{'host': host, 'port': port}],
+        hosts=[{"host": host, "port": port}],
         http_compress=True,  # enables gzip compression for request bodies
         http_auth=auth,
         # client_cert = client_cert_path,
@@ -236,17 +290,16 @@ if __name__ == "__main__":
         verify_certs=False,  # set to true if you have certs
         ssl_assert_hostname=False,
         ssl_show_warn=False,
-
     )
     index_name = args.index
     query_prompt = "\nEnter your query (type 'Exit' to exit or hit ctrl-c):"
-    print(query_prompt)
-    for line in fileinput.input():
-        query = line.rstrip()
-        if query == "Exit":
-            break
-        search(client=opensearch, user_query=query, index=index_name)
 
-        print(query_prompt)
+    while True:
+        query = input(query_prompt)
 
-    
+        search(
+            client=opensearch,
+            user_query=query,
+            index=index_name,
+            synonyms=args.synonyms,
+        )

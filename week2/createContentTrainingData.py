@@ -72,7 +72,7 @@ if __name__ == '__main__':
     files = glob.glob(f'{directory}/*.xml')
 
     print("Writing results to %s" % output_file)
-    with multiprocessing.Pool() as p:
+    with multiprocessing.Pool(12) as p:
         all_labels = tqdm(p.imap_unordered(_label_filename, files), total=len(files))
 
 
