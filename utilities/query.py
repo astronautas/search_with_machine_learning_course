@@ -2,6 +2,7 @@
 # weeks (e.g. query understanding).  See the main section at the bottom of the file
 from opensearchpy import OpenSearch
 import warnings
+import fasttext
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 import argparse
@@ -66,25 +67,29 @@ def create_query(
     size=10,
     source=None,
     synonyms=False,
+    predicted_category=None,
 ):
     name_field = "name" if not synonyms else "name.synonyms"
 
     if synonyms:
         print(name_field)
         print("Using synonyms")
+    category = predicted_category[0][0].lstrip("__label__")
+    category_score = predicted_category[1][0]
+
+    print(f"Predicted: {category}:{category_score}")
+
+    # if category_score > 0.02:
+    #     filters.append({"term": {"categoryLeaf": category}})
 
     query_obj = {
-        'size': size,
-        "sort": [
-            {sort: {"order": sortDir}}
-        ],
+        "size": size,
+        "sort": [{sort: {"order": sortDir}}],
         "query": {
             "function_score": {
                 "query": {
                     "bool": {
-                        "must": [
-
-                        ],
+                        "must": [],
                         "should": [  #
                             {
                                 "match": {
@@ -93,7 +98,7 @@ def create_query(
                                         "fuzziness": "1",
                                         "prefix_length": 2,
                                         # short words are often acronyms or usually not misspelled, so don't edit
-                                        "boost": 0.01
+                                        "boost": 0.01,
                                     }
                                 }
                             },
@@ -102,7 +107,7 @@ def create_query(
                                     "name.hyphens": {
                                         "query": user_query,
                                         "slop": 1,
-                                        "boost": 50
+                                        "boost": 50,
                                     }
                                 }
                             },
@@ -112,16 +117,24 @@ def create_query(
                                     "type": "phrase",
                                     "slop": "6",
                                     "minimum_should_match": "2<75%",
-                                    "fields": [f"#{name_field}^10", "name.hyphens^10", "shortDescription^5",
-                                               "longDescription^5", "department^0.5", "sku", "manufacturer", "features",
-                                               "categoryPath"]
+                                    "fields": [
+                                        f"#{name_field}^10",
+                                        "name.hyphens^10",
+                                        "shortDescription^5",
+                                        "longDescription^5",
+                                        "department^0.5",
+                                        "sku",
+                                        "manufacturer",
+                                        "features",
+                                        "categoryPath",
+                                    ],
                                 }
                             },
                             {
                                 "terms": {
                                     # Lots of SKUs in the query logs, boost by it, split on whitespace so we get a list
                                     "sku": user_query.split(),
-                                    "boost": 50.0
+                                    "boost": 50.0,
                                 }
                             },
                             {  # lots of products have hyphens in them or other weird casing things like iPad
@@ -129,68 +142,42 @@ def create_query(
                                     "name.hyphens": {
                                         "query": user_query,
                                         "operator": "OR",
-                                        "minimum_should_match": "2<75%"
+                                        "minimum_should_match": "2<75%",
                                     }
                                 }
-                            }
+                            },
                         ],
                         "minimum_should_match": 1,
-                        "filter": filters  #
+                        "filter": filters,  #
                     }
                 },
                 "boost_mode": "multiply",  # how _score and functions are combined
                 "score_mode": "sum",  # how functions are combined
                 "functions": [
                     {
-                        "filter": {
-                            "exists": {
-                                "field": "salesRankShortTerm"
-                            }
-                        },
+                        "filter": {"exists": {"field": "salesRankShortTerm"}},
                         "gauss": {
-                            "salesRankShortTerm": {
-                                "origin": "1.0",
-                                "scale": "100"
-                            }
-                        }
+                            "salesRankShortTerm": {"origin": "1.0", "scale": "100"}
+                        },
                     },
                     {
-                        "filter": {
-                            "exists": {
-                                "field": "salesRankMediumTerm"
-                            }
-                        },
+                        "filter": {"exists": {"field": "salesRankMediumTerm"}},
                         "gauss": {
-                            "salesRankMediumTerm": {
-                                "origin": "1.0",
-                                "scale": "1000"
-                            }
-                        }
+                            "salesRankMediumTerm": {"origin": "1.0", "scale": "1000"}
+                        },
                     },
                     {
-                        "filter": {
-                            "exists": {
-                                "field": "salesRankLongTerm"
-                            }
-                        },
+                        "filter": {"exists": {"field": "salesRankLongTerm"}},
                         "gauss": {
-                            "salesRankLongTerm": {
-                                "origin": "1.0",
-                                "scale": "1000"
-                            }
-                        }
+                            "salesRankLongTerm": {"origin": "1.0", "scale": "1000"}
+                        },
                     },
-                    {
-                        "script_score": {
-                            "script": "0.0001"
-                        }
-                    }
-                ]
-
+                    {"script_score": {"script": "0.0001"}},
+                ],
             }
-        }
+        },
     }
-    
+
     if click_prior_query is not None and click_prior_query != "":
         query_obj["query"]["function_score"]["query"]["bool"]["should"].append(
             {
@@ -212,6 +199,9 @@ def create_query(
     return query_obj
 
 
+model = fasttext.load_model("query-classifier-1k-hparams.bin")
+
+
 def search(
     client,
     user_query,
@@ -221,16 +211,19 @@ def search(
     synonyms=False,
 ):
     #### W3: classify the query
+    predicted_category = model.predict(user_query)
+
     #### W3: create filters and boosts
     # Note: you may also want to modify the `create_query` method above
     query_obj = create_query(
         user_query,
         click_prior_query=None,
-        filters=None,
+        filters=[],
         sort=sort,
         sortDir=sortDir,
         source=["name", "shortDescription"],
         synonyms=synonyms,
+        predicted_category=predicted_category,
     )
     logging.info(query_obj)
     response = client.search(query_obj, index=index)

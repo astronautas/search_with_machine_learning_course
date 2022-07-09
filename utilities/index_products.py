@@ -190,8 +190,8 @@ def index_file(
         ):
             continue
         if synonyms:
-            annotate_document(doc, documents_url)
-            logger.info(f"Added Syns: {doc}")
+            # annotate_document(doc, documents_url)
+            # logger.info(f"Added Syns: {doc}")
         docs.append({"_index": index_name, "_id": doc["sku"][0], "_source": doc})
         # docs.append({'_index': index_name, '_source': doc})
         docs_indexed += 1
