@@ -74,13 +74,14 @@ def create_query(
     if synonyms:
         print(name_field)
         print("Using synonyms")
+        
     category = predicted_category[0][0].lstrip("__label__")
     category_score = predicted_category[1][0]
 
     print(f"Predicted: {category}:{category_score}")
 
-    # if category_score > 0.02:
-    #     filters.append({"term": {"categoryLeaf": category}})
+    if category_score > 0.4:
+        filters.append({"term": {"categoryLeaf": category}})
 
     query_obj = {
         "size": size,
