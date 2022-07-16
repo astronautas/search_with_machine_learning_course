@@ -220,7 +220,7 @@ def search(
     # Note: you may also want to modify the `create_query` method above
 
     if vector:
-        query_obj = create_vector_query(sentence_model, user_query, 2)
+        query_obj = create_vector_query(sentence_model, user_query, 1)
     else:
         query_obj = create_query(
             user_query,
