@@ -2,7 +2,7 @@
 import opensearchpy
 import requests
 from lxml import etree
-
+from sentence_transformers import SentenceTransformer
 import os
 import click
 import glob
@@ -13,7 +13,8 @@ import fasttext
 from pathlib import Path
 import requests
 import json
-
+from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor
 from time import perf_counter
 
 logger = logging.getLogger(__name__)
@@ -103,11 +104,23 @@ def get_opensearch():
     )
     return client
 
+from typing import List, Any, Dict
+
+def add_name_embeddings(docs: List[Dict[str, Any]], names: List[str], model: Any) -> Dict[str, Any]:
+    # breakpoint()
+    embeddings = model.encode(names)
+
+    for embedding, doc in zip(embeddings, docs):
+        doc["_source"]["embedding"] = embedding.tolist()
+    
+    return docs
+
 
 def index_file(file, index_name, reduced=False):
     logger.info("Creating Model")
     # IMPLEMENT ME: instantiate the sentence transformer model!
-    
+    model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+
     logger.info("Ready to index")
 
     docs_indexed = 0
@@ -137,18 +150,25 @@ def index_file(file, index_name, reduced=False):
         if reduced and ('categoryPath' not in doc or 'Best Buy' not in doc['categoryPath'] or 'Movies & Music' in doc['categoryPath']):
             continue
         docs.append({'_index': index_name, '_id':doc['sku'][0], '_source' : doc})
-        #docs.append({'_index': index_name, '_source': doc})
         docs_indexed += 1
+
+        names.append(doc["name"][0])
+
         if docs_indexed % 200 == 0:
-            logger.info("Indexing")
+            docs = add_name_embeddings(docs=docs, names=names, model=model)
+            logger.info("Indexing batch")
             bulk(client, docs, request_timeout=60)
             logger.info(f'{docs_indexed} documents indexed')
             docs = []
             names = []
+
     if len(docs) > 0:
+        docs = add_name_embeddings(docs=docs, names=names, model=model)
         bulk(client, docs, request_timeout=60)
         logger.info(f'{docs_indexed} documents indexed')
     return docs_indexed
+
+import concurrent.futures
 
 @click.command()
 @click.option('--source_dir', '-s', help='XML files source directory')
@@ -156,15 +176,16 @@ def index_file(file, index_name, reduced=False):
 @click.option('--reduced', is_flag=True, show_default=True, default=False, help="Removes music, movies, and merchandised products.")
 def main(source_dir: str, index_name: str, reduced: bool):
     logger.info(f"Indexing {source_dir} to {index_name}, the reduced flag set to {reduced}.")
-    files = glob.glob(source_dir + "/*.xml")
+    files = glob.glob(source_dir + "/*.xml")[0:5]
     docs_indexed = 0
     start = perf_counter()
 
-    for file in files:
+    for file in tqdm(files):
         docs_indexed += index_file(file, index_name, reduced)
 
     finish = perf_counter()
     logger.info(f'Done. Total docs: {docs_indexed} in {(finish - start)/60} minutes')
+
 
 if __name__ == "__main__":
     main()

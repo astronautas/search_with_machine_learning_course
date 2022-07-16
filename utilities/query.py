@@ -3,7 +3,7 @@
 from opensearchpy import OpenSearch
 import warnings
 import fasttext
-
+from sentence_transformers import SentenceTransformer
 warnings.filterwarnings("ignore", category=FutureWarning)
 import argparse
 import json
@@ -14,6 +14,7 @@ import pandas as pd
 import fileinput
 import logging
 
+sentence_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -210,27 +211,48 @@ def search(
     sort="_score",
     sortDir="desc",
     synonyms=False,
+    vector=False
 ):
     #### W3: classify the query
     predicted_category = model.predict(user_query)
 
     #### W3: create filters and boosts
     # Note: you may also want to modify the `create_query` method above
-    query_obj = create_query(
-        user_query,
-        click_prior_query=None,
-        filters=[],
-        sort=sort,
-        sortDir=sortDir,
-        source=["name", "shortDescription"],
-        synonyms=synonyms,
-        predicted_category=predicted_category,
-    )
+
+    if vector:
+        query_obj = create_vector_query(sentence_model, user_query, 2)
+    else:
+        query_obj = create_query(
+            user_query,
+            click_prior_query=None,
+            filters=[],
+            sort=sort,
+            sortDir=sortDir,
+            source=["name", "shortDescription"],
+            synonyms=synonyms,
+            predicted_category=predicted_category,
+        )
+
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
     if response and response["hits"]["hits"] and len(response["hits"]["hits"]) > 0:
         hits = response["hits"]["hits"]
         print(json.dumps(response, indent=2))
+
+def create_vector_query(model, query, k):
+    query_embedding = model.encode([query])[0].tolist()
+    query = {
+        "query": {
+            "knn": {
+                "embedding": {
+                    "vector": query_embedding,
+                    "k": k
+                }
+            }
+        }
+    }
+
+    return query
 
 
 if __name__ == "__main__":
@@ -254,6 +276,10 @@ if __name__ == "__main__":
 
     general.add_argument(
         "-s", "--synonyms", type=bool, default=False, help="Use synonyms."
+    )
+
+    general.add_argument(
+        "-v", "--vector", type=bool, default=False, help="Use vector search."
     )
 
     general.add_argument(
@@ -296,4 +322,5 @@ if __name__ == "__main__":
             user_query=query,
             index=index_name,
             synonyms=args.synonyms,
+            vector=args.vector
         )
